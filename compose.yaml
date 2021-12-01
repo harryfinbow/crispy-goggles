@@ -1,0 +1,15 @@
+version: "3.9"
+services:
+  machine:
+    image: python:2
+    stdin_open: true
+    tty: true
+    volumes:
+    - /var/poshc2/bot/payloads:/payloads
+
+networks:
+  default:
+    name: botnet
+    ipam:
+      config:
+      - subnet: 172.18.0.0/16
