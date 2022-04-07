@@ -4,20 +4,30 @@ import time
 import pyshark
 import pandas
 
+SkewLimit = 0.25
+PeriodicityJitterThreshold = 25
+LengthJitterThreshold = 5
+DurationJitterThreshold = 100
+BeaconIntervalThreshold = 900
+MinStreamCount = 10
+
 start_time = time.time()
 malicious_ip = re.compile(r'172.18.0.(\d)*/172.18.0.(\d)*')
 
 def cls():
     os.system('cls' if os.name=='nt' else 'clear')
 
-def print_every(x, obj):    
+
+def print_every(x, obj, obj2=0):
     if not print_every.counter % x:
         current_time = time.time()
         cls()
         print('Packets Analysed:', print_every.counter)
-        print("Time Elapsed:     %s seconds" % (current_time - start_time))
-        print("Time per 1000:    %s seconds" % (current_time - print_every.last_time))
+        print("Time Elapsed:     %.2f seconds" % (current_time - start_time))
+        print("Time per 1000:    %.2f seconds" % (current_time - print_every.last_time))
+        print(obj2)
         print(obj)
+        print(obj.loc[obj['Malicious'] == 1])
 
         print_every.last_time = current_time
 
@@ -40,11 +50,11 @@ def capture_live_packets(network_interface):
 
 def read_capture_file(file_path):
     tcp_streams = {}
-    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', 'Periodicity jitter', 'Periodicity skew', 'Duration jitter', 'Duration skew', 'Length jitter', 'Length skew', 'Malicious'])
+    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', ('Periodicity', 'Spread'), ('Periodicity', 'Jitter'), ('Periodicity', 'Skew'), ('Length', 'Spread'), ('Length', 'Jitter'), ('Length', 'Skew'), 'Malicious'])
+    flagged_tcp_streams = []
 
     capture = pyshark.FileCapture(file_path, keep_packets=False, only_summaries=True)
 
-    #'''
     for raw_packet in capture:
         tcp_packet = filter_tcp_traffic(raw_packet)
 
@@ -52,15 +62,7 @@ def read_capture_file(file_path):
             tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
             tcp_streams_statistics = get_tcp_streams_statistics(tcp_packet, tcp_streams, tcp_streams_statistics)
 
-            print_every(1000, tcp_streams_statistics)
-    '''
-
-    for raw_packet in capture:
-       # filter_tcp_traffic(raw_packet)
-
-        print_every(1000, 0)
-    '''
-
+            print_every(1000, tcp_streams_statistics.round(2))
 
 def group_tcp_streams_by_ip(packet, tcp_streams):
     tcp_stream = pandas.DataFrame([(packet['Stream index'], packet['Time'], packet['Length'], 0)], columns = ['Stream index', 'Time', 'Length', 'Duration'])
@@ -73,7 +75,10 @@ def group_tcp_streams_by_ip(packet, tcp_streams):
 
     else:
         tcp_streams[packet['IP pair']]['Length'] = tcp_streams[packet['IP pair']]['Length'] + packet['Length']
-        tcp_streams[packet['IP pair']]['Duration'] = packet['Time'] - tcp_streams[packet['IP pair']]['Time']
+        ip_pair_streams = tcp_streams[packet['IP pair']]
+
+        #ip_pair_streams.loc[ip_pair_streams['Stream index'] == packet['Stream index'], 'Length'] = ip_pair_streams.loc[ip_pair_streams['Stream index'] == packet['Stream index'], 'Length'] + packet['Length']
+        ip_pair_streams['Duration'] = packet['Time'] - ip_pair_streams['Time']
 
     return tcp_streams
 
@@ -81,19 +86,30 @@ def group_tcp_streams_by_ip(packet, tcp_streams):
 def get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
     stream_count = len(tcp_streams[packet['IP pair']].index)
 
-    if stream_count > 10:
-        periodicity_jitter = (tcp_streams[packet['IP pair']]['Time'].std() / tcp_streams[packet['IP pair']]['Time'].mean()) * 100
+    if stream_count > MinStreamCount:
+        periodicity_spread = (tcp_streams[packet['IP pair']]['Time'].sum() / (stream_count * tcp_streams[packet['IP pair']]['Time'].median())) - 1  # Normalised to the median value (acts as a % of the median as opposed to being massive because of median value)
+        periodicity_jitter = (tcp_streams[packet['IP pair']]['Time'].diff().std() / tcp_streams[packet['IP pair']]['Time'].diff().mean()) * 100
         periodicity_skew = tcp_streams[packet['IP pair']]['Time'].skew()
 
         duration_jitter = (tcp_streams[packet['IP pair']]['Duration'].std() / tcp_streams[packet['IP pair']]['Duration'].mean()) * 100
         duration_skew = tcp_streams[packet['IP pair']]['Duration'].skew()
 
+
+        #length_max = tcp_streams[packet['IP pair']]['Length'].max()
+        #length_min= tcp_streams[packet['IP pair']]['Length'].min()
+        #length_mean = tcp_streams[packet['IP pair']]['Length'].mean()
+        #length_std = tcp_streams[packet['IP pair']]['Length'].std()
+
+        length_spread = (tcp_streams[packet['IP pair']]['Length'].sum() / (stream_count * tcp_streams[packet['IP pair']]['Length'].median())) - 1
         length_jitter = (tcp_streams[packet['IP pair']]['Length'].std() / tcp_streams[packet['IP pair']]['Length'].mean()) * 100
         length_skew = tcp_streams[packet['IP pair']]['Length'].skew()
 
         malicious = 1 if bool(malicious_ip.search(packet['IP pair'])) else 0
 
-        tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_jitter, periodicity_skew, duration_jitter, duration_skew, length_jitter, length_skew, malicious]
+        #flagged = 1 if periodicity_jitter < PeriodicityJitterThreshold and periodicity_skew < SkewLimit and length_jitter < LengthJitterThreshold and length_skew < SkewLimit else 0
+        #and duration_jitter < DurationJitterThreshold and duration_skew < SkewLimit
+        #duration_jitter, duration_skew,
+        tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_spread, periodicity_jitter, periodicity_skew, length_spread, length_jitter, length_skew, malicious]
 
     return tcp_streams_statistics
 
@@ -108,6 +124,7 @@ def filter_tcp_traffic(packet):
        if packet.protocol == 'TCP':
             results = get_packet_details(packet)
             return results
+
 
 def get_packet_details(packet):
     """
