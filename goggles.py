@@ -1,7 +1,30 @@
-import sys
+import os
+import statistics
+import time
+from attr import attr
 import pyshark
 import pandas
-#sys.stdout.write("\033[F")
+
+start_time = time.time()
+
+def cls():
+    os.system('cls' if os.name=='nt' else 'clear')
+
+def print_every(x, obj):    
+    if not print_every.counter % x:
+        current_time = time.time()
+        cls()
+        print('Packets Analysed: ', print_every.counter)
+        print("--- %s seconds ---" % (time.time() - start_time))
+        print(current_time - print_every.last_time)
+        print(obj)
+
+        print_every.last_time = current_time
+
+    print_every.counter += 1
+print_every.counter = 0
+print_every.last_time = 0
+
 
 def capture_live_packets(network_interface):
     capture = pyshark.LiveCapture(interface=network_interface)
@@ -9,12 +32,8 @@ def capture_live_packets(network_interface):
         print(filter_tcp_traffic(raw_packet))
 
 def read_capture_file(file_path):
-    tcp_packets_by_index = {}
-    tcp_streams_by_ip = {} #{'172.1.1.1/172.1.1.2': [tcp_streams[1], tcp_streams[2]]} THIS NEEDS TO BE A DATAFRAME
-    tcp_streams_statistics = {} #'172.1.1.1/172.1.1.2': {'Count', 'Min', 'Max', 'Mean', 'Standard Dev', 'Jitter', 'Skew'}}
-
-
-    tcp_stream = pandas.DataFrame(columns = [])
+    tcp_streams = {}
+    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', 'Periodicity jitter', 'Periodicity skew'])
 
     capture = pyshark.FileCapture(file_path, keep_packets=False)
 
@@ -22,54 +41,38 @@ def read_capture_file(file_path):
         tcp_packet = filter_tcp_traffic(raw_packet)
 
         if tcp_packet is not None:
-            tcp_streams = group_by_stream_index(tcp_packet, tcp_packets_by_index)
-            tcp_streams_by_ip = group_tcp_streams_by_ip(tcp_packet, tcp_packets_by_index, tcp_streams_by_ip)
-            tcp_streams_statistics = get_tcp_stream_statistics(tcp_packet, tcp_packets_by_index)
+            tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
+            tcp_streams_statistics = get_tcp_streams_statistics(tcp_packet, tcp_streams, tcp_streams_statistics)
 
-            print(tcp_streams_statistics)
-            sys.stdout.write("\033[F")
+            print_every(1000, tcp_streams_statistics)
 
 
-def get_tcp_stream_statistics(packet, grouped_streams):
-    ip_pair = packet['Source address'] + "/" + packet['Destination address']
 
-    for stream in grouped_streams[ip_pair]:
-        grouped_streams[ip_pair][stream]['Length']
+def group_tcp_streams_by_ip(packet, tcp_streams):
+    tcp_stream = pandas.DataFrame([(packet['Stream index'], packet['Time'], packet['Length'])], columns = ['Stream index', 'Time', 'Length'])
+    
+    if packet['IP pair'] not in tcp_streams:
+        tcp_streams[packet['IP pair']] = tcp_stream
 
-    return grouped_streams[ip_pair][0]['Length']
+    elif packet['Stream index'] not in tcp_streams[packet['IP pair']]['Stream index'].values:
+        tcp_streams[packet['IP pair']] = pandas.concat([tcp_streams[packet['IP pair']], tcp_stream])
 
-
-def group_tcp_streams_by_ip(packet, streams, grouped_streams):
-    ip_pair = packet['Source address'] + "/" + packet['Destination address']
-
-    if packet[ip_pair, 'Stream index'] not in grouped_streams:
-
-def old_group_tcp_streams_by_ip(packet, streams, grouped_streams):
-    ip_pair = packet['Source address'] + "/" + packet['Destination address']
-
-    if ip_pair not in grouped_streams:
-        grouped_streams[ip_pair] = [streams[packet['Stream index']]]
     else:
-        grouped_streams[ip_pair].append(streams[packet['Stream index']])
+        tcp_streams[packet['IP pair']]['Length'] = tcp_streams[packet['IP pair']]['Length'] + packet['Length']
 
-    return grouped_streams
+    return tcp_streams
 
 
-def group_by_stream_index(packet, streams):
-    """
-    This function is groups all packets with the same stream index together.
-    :param packet: tcp packet / streams: dictionary of previously grouped packets
-    :return: dictionary of grouped packets
-    """
-    if packet['Stream index'] not in streams:
-        streams[packet['Stream index']] = {'Source':       packet['Source address'], 
-                                            'Destination': packet['Destination address'], 
-                                            'Start time':  packet['Packet time'], 
-                                            'Length':      packet['Packet length']}
-    else:
-        streams[packet['Stream index']]['Length'] =  streams[packet['Stream index']]['Length'] + packet['Packet length']
+def get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
+    stream_count = len(tcp_streams[packet['IP pair']].index)
 
-    return streams
+    if stream_count > 10:
+        periodicity_jitter = (tcp_streams[packet['IP pair']]['Time'].std() / tcp_streams[packet['IP pair']]['Time'].mean()) * 100
+        periodicity_skew = tcp_streams[packet['IP pair']]['Time'].skew()
+
+        tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_jitter, periodicity_skew]
+
+    return tcp_streams_statistics
 
 
 def filter_tcp_traffic(packet):
@@ -82,29 +85,6 @@ def filter_tcp_traffic(packet):
        results = get_packet_details(packet)
        return results
 
-
-def get_formatted_packet_details(packet):
-    """
-    This function is designed to parse specific details from an individual packet.
-    :param packet: raw packet from either a pcap file or via live capture using TShark
-    :return: specific packet details
-    """
-    protocol = packet.transport_layer
-    source_address = packet.ip.src
-    source_port = packet[packet.transport_layer].srcport
-    destination_address = packet.ip.dst
-    destination_port = packet[packet.transport_layer].dstport
-    packet_time = packet.sniff_time
-
-
-    return f'Packet Timestamp: {packet_time}' \
-           f'\nProtocol type: {protocol}' \
-           f'\nSource address: {source_address}' \
-           f'\nSource port: {source_port}' \
-           f'\nDestination address: {destination_address}' \
-           f'\nDestination port: {destination_port}\n'
-
-
 def get_packet_details(packet):
     """
     This function is designed to parse specific details from an individual packet.
@@ -114,32 +94,17 @@ def get_packet_details(packet):
     stream_index = int(packet.tcp.stream)
     source_address = packet.ip.src
     destination_address = packet.ip.dst
-    packet_time = packet.sniff_time
+    ip_pair = source_address + "/" + destination_address
+    packet_time = float(packet.sniff_timestamp)
     packet_length = int(packet.length)
+    
 
-    #return pandas.DataFrame([(stream_index, source_address, destination_address, packet_time, packet_length)], columns=['Stream index', 'Source address', 'Destination address', 'Start time', 'Packet length'])
-
-    #"""
     return {'Stream index': stream_index,
             'Source address' : source_address,
             'Destination address' : destination_address,
-            'Packet time': packet_time,
-            'Packet length': packet_length}
-    #"""
-
-
-def replace_ip_with_index(ip):
-    global ip_index, ip_index_list, updated
-
-    if ip not in ip_index_list:
-        ip_index_list[ip] = ip_index
-        index = ip_index
-        ip_index = ip_index + 1
-        updated = 1
-    else:
-        index = ip_index_list[ip]
-
-    return index
+            'IP pair': ip_pair,
+            'Time': packet_time,
+            'Length': packet_length}
 
 #capture_live_packets('\\Device\\NPF_{25D9BFB1-5E09-4CC1-84E6-0CFCF3015D87}')
-read_capture_file('tcpdump/10-5.pcap')
+read_capture_file('tcpdump/smaller-test.pcap')
