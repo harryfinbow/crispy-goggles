@@ -40,12 +40,11 @@ def read_capture_file(file_path):
     tcp_streams = {}
     tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', 'Periodicity jitter', 'Periodicity skew', 'Duration jitter', 'Duration skew', 'Length jitter', 'Length skew'])
 
-    capture = pyshark.FileCapture(file_path, keep_packets=False)
+    capture = pyshark.FileCapture(file_path, keep_packets=False, only_summaries=True)
 
     #'''
     for raw_packet in capture:
         tcp_packet = filter_tcp_traffic(raw_packet)
-        
 
         if tcp_packet is not None:
             tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
@@ -101,9 +100,10 @@ def filter_tcp_traffic(packet):
     :param packet: raw packet
     :return: specific packet details
     """
-    if hasattr(packet, 'tcp'):
-       results = get_packet_details(packet)
-       return results
+    if hasattr(packet, 'protocol'):
+       if packet.protocol == 'TCP':
+            results = get_packet_details(packet)
+            return results
 
 def get_packet_details(packet):
     """
@@ -111,12 +111,11 @@ def get_packet_details(packet):
     :param packet: raw packet from either a pcap file or via live capture using TShark
     :return: specific packet details
     """
-    print(packet)
-    stream_index = int(packet.tcp.stream)
-    source_address = packet.ip.src
-    destination_address = packet.ip.dst
+    stream_index = int(getattr(packet, 'stream index'))
+    source_address = packet.source
+    destination_address = packet.destination
     ip_pair = source_address + "/" + destination_address
-    packet_time = float(packet.sniff_timestamp)
+    packet_time = float(packet.time)
     packet_length = int(packet.length)
     
 
