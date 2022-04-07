@@ -1,7 +1,5 @@
 import os
-import statistics
 import time
-from attr import attr
 import pyshark
 import pandas
 
@@ -27,29 +25,44 @@ print_every.last_time = 0
 
 
 def capture_live_packets(network_interface):
-    capture = pyshark.LiveCapture(interface=network_interface)
+    tcp_streams = {}
+    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', 'Periodicity jitter', 'Periodicity skew', 'Duration jitter', 'Duration skew', 'Length jitter', 'Length skew'])
+
+    capture = pyshark.LiveCapture(interface=network_interface, only_summaries = True)
+    
     for raw_packet in capture.sniff_continuously():
         print(filter_tcp_traffic(raw_packet))
 
+        print_every(1000, 0)
+    
+
 def read_capture_file(file_path):
     tcp_streams = {}
-    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', 'Periodicity jitter', 'Periodicity skew'])
+    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', 'Periodicity jitter', 'Periodicity skew', 'Duration jitter', 'Duration skew', 'Length jitter', 'Length skew'])
 
     capture = pyshark.FileCapture(file_path, keep_packets=False)
 
+    #'''
     for raw_packet in capture:
         tcp_packet = filter_tcp_traffic(raw_packet)
+        
 
         if tcp_packet is not None:
             tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
             tcp_streams_statistics = get_tcp_streams_statistics(tcp_packet, tcp_streams, tcp_streams_statistics)
 
             print_every(1000, tcp_streams_statistics)
+    '''
 
+    for raw_packet in capture:
+       # filter_tcp_traffic(raw_packet)
+
+        print_every(1000, 0)
+    '''
 
 
 def group_tcp_streams_by_ip(packet, tcp_streams):
-    tcp_stream = pandas.DataFrame([(packet['Stream index'], packet['Time'], packet['Length'])], columns = ['Stream index', 'Time', 'Length'])
+    tcp_stream = pandas.DataFrame([(packet['Stream index'], packet['Time'], packet['Length'], 0)], columns = ['Stream index', 'Time', 'Length', 'Duration'])
     
     if packet['IP pair'] not in tcp_streams:
         tcp_streams[packet['IP pair']] = tcp_stream
@@ -59,6 +72,7 @@ def group_tcp_streams_by_ip(packet, tcp_streams):
 
     else:
         tcp_streams[packet['IP pair']]['Length'] = tcp_streams[packet['IP pair']]['Length'] + packet['Length']
+        tcp_streams[packet['IP pair']]['Duration'] = packet['Time'] - tcp_streams[packet['IP pair']]['Time']
 
     return tcp_streams
 
@@ -66,11 +80,17 @@ def group_tcp_streams_by_ip(packet, tcp_streams):
 def get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
     stream_count = len(tcp_streams[packet['IP pair']].index)
 
-    if stream_count > 10:
+    if stream_count > 1:
         periodicity_jitter = (tcp_streams[packet['IP pair']]['Time'].std() / tcp_streams[packet['IP pair']]['Time'].mean()) * 100
         periodicity_skew = tcp_streams[packet['IP pair']]['Time'].skew()
 
-        tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_jitter, periodicity_skew]
+        duration_jitter = (tcp_streams[packet['IP pair']]['Duration'].std() / tcp_streams[packet['IP pair']]['Duration'].mean()) * 100
+        duration_skew = tcp_streams[packet['IP pair']]['Duration'].skew()
+
+        length_jitter = (tcp_streams[packet['IP pair']]['Length'].std() / tcp_streams[packet['IP pair']]['Length'].mean()) * 100
+        length_skew = tcp_streams[packet['IP pair']]['Length'].skew()
+
+        tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_jitter, periodicity_skew, duration_jitter, duration_skew, length_jitter, length_skew]
 
     return tcp_streams_statistics
 
@@ -91,6 +111,7 @@ def get_packet_details(packet):
     :param packet: raw packet from either a pcap file or via live capture using TShark
     :return: specific packet details
     """
+    print(packet)
     stream_index = int(packet.tcp.stream)
     source_address = packet.ip.src
     destination_address = packet.ip.dst
@@ -107,4 +128,6 @@ def get_packet_details(packet):
             'Length': packet_length}
 
 #capture_live_packets('\\Device\\NPF_{25D9BFB1-5E09-4CC1-84E6-0CFCF3015D87}')
+#capture_live_packets('\\Device\\NPF_{7409A38B-59FA-4DD0-BFA0-69D15666F1E6}')
+
 read_capture_file('tcpdump/smaller-test.pcap')
