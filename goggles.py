@@ -62,53 +62,52 @@ def read_capture_file(file_path):
             tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
             tcp_streams_statistics = get_tcp_streams_statistics(tcp_packet, tcp_streams, tcp_streams_statistics)
 
-            print_every(1000, tcp_streams_statistics.round(2))
+            print_every(1000, tcp_streams_statistics)
 
 def group_tcp_streams_by_ip(packet, tcp_streams):
     tcp_stream = pandas.DataFrame([(packet['Stream index'], packet['Time'], packet['Length'], 0)], columns = ['Stream index', 'Time', 'Length', 'Duration'])
-    
-    if packet['IP pair'] not in tcp_streams:
-        tcp_streams[packet['IP pair']] = tcp_stream
+    tcp_stream = tcp_stream.set_index('Stream index')
 
-    elif packet['Stream index'] not in tcp_streams[packet['IP pair']]['Stream index'].values:
-        tcp_streams[packet['IP pair']] = pandas.concat([tcp_streams[packet['IP pair']], tcp_stream])
+    ip_pair = packet['IP pair']
+    stream_index = packet['Stream index']
+
+    if ip_pair not in tcp_streams:
+        tcp_streams[ip_pair] = tcp_stream
+
+    elif stream_index not in tcp_streams[ip_pair].index:
+        tcp_streams[ip_pair] = pandas.concat([tcp_streams[ip_pair], tcp_stream])
 
     else:
-        tcp_streams[packet['IP pair']]['Length'] = tcp_streams[packet['IP pair']]['Length'] + packet['Length']
-        ip_pair_streams = tcp_streams[packet['IP pair']]
-
-        #ip_pair_streams.loc[ip_pair_streams['Stream index'] == packet['Stream index'], 'Length'] = ip_pair_streams.loc[ip_pair_streams['Stream index'] == packet['Stream index'], 'Length'] + packet['Length']
-        ip_pair_streams['Duration'] = packet['Time'] - ip_pair_streams['Time']
+        tcp_streams[ip_pair].at[stream_index, 'Length'] += packet['Length']
+        tcp_streams[ip_pair].at[stream_index, 'Duration'] = packet['Time'] - tcp_streams[ip_pair].at[stream_index, 'Time']
+        pass
 
     return tcp_streams
 
 
-def get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
+def faster_get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
     stream_count = len(tcp_streams[packet['IP pair']].index)
 
+def get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
+    tcp_stream_dataframe = tcp_streams[packet['IP pair']]
+    stream_count = len(tcp_stream_dataframe.index)
+
     if stream_count > MinStreamCount:
-        periodicity_spread = (tcp_streams[packet['IP pair']]['Time'].sum() / (stream_count * tcp_streams[packet['IP pair']]['Time'].median())) - 1  # Normalised to the median value (acts as a % of the median as opposed to being massive because of median value)
-        periodicity_jitter = (tcp_streams[packet['IP pair']]['Time'].diff().std() / tcp_streams[packet['IP pair']]['Time'].diff().mean()) * 100
-        periodicity_skew = tcp_streams[packet['IP pair']]['Time'].skew()
+        time_difference = tcp_stream_dataframe['Time'].diff()
 
-        duration_jitter = (tcp_streams[packet['IP pair']]['Duration'].std() / tcp_streams[packet['IP pair']]['Duration'].mean()) * 100
-        duration_skew = tcp_streams[packet['IP pair']]['Duration'].skew()
+        periodicity_spread = (tcp_stream_dataframe['Time'].sum() / (stream_count * tcp_stream_dataframe['Time'].median())) - 1  # Normalised to the median value (acts as a % of the median as opposed to being massive because of median value)
+        periodicity_jitter = (time_difference.std() / time_difference.mean()) * 100
+        periodicity_skew = tcp_stream_dataframe['Time'].skew()
 
+        #duration_jitter = (tcp_stream_dataframe['Duration'].std() / tcp_stream_dataframe['Duration'].mean()) * 100
+        #duration_skew = tcp_stream_dataframe['Duration'].skew()
 
-        #length_max = tcp_streams[packet['IP pair']]['Length'].max()
-        #length_min= tcp_streams[packet['IP pair']]['Length'].min()
-        #length_mean = tcp_streams[packet['IP pair']]['Length'].mean()
-        #length_std = tcp_streams[packet['IP pair']]['Length'].std()
-
-        length_spread = (tcp_streams[packet['IP pair']]['Length'].sum() / (stream_count * tcp_streams[packet['IP pair']]['Length'].median())) - 1
-        length_jitter = (tcp_streams[packet['IP pair']]['Length'].std() / tcp_streams[packet['IP pair']]['Length'].mean()) * 100
-        length_skew = tcp_streams[packet['IP pair']]['Length'].skew()
+        length_spread = (tcp_stream_dataframe['Length'].sum() / (stream_count * tcp_stream_dataframe['Length'].median())) - 1
+        length_jitter = (tcp_stream_dataframe['Length'].std() / tcp_stream_dataframe['Length'].mean()) * 100
+        length_skew = tcp_stream_dataframe['Length'].skew()
 
         malicious = 1 if bool(malicious_ip.search(packet['IP pair'])) else 0
 
-        #flagged = 1 if periodicity_jitter < PeriodicityJitterThreshold and periodicity_skew < SkewLimit and length_jitter < LengthJitterThreshold and length_skew < SkewLimit else 0
-        #and duration_jitter < DurationJitterThreshold and duration_skew < SkewLimit
-        #duration_jitter, duration_skew,
         tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_spread, periodicity_jitter, periodicity_skew, length_spread, length_jitter, length_skew, malicious]
 
     return tcp_streams_statistics
