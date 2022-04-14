@@ -1,149 +1,129 @@
 import os
-import re
 import time
-from numpy import floor
-import pyshark
+import numpy
 import pandas
+import pyshark
 
-PeriodicitySpreadThreshold = 30 # seconds
-PeriodicityJitterThreshold = 30 # percent
-LengthSpreadThreshold = 64 # bytes
-LengthJitterThreshold = 15 # percent
-LengthCharacteristicThreshold = 16384 # bytes
-MinStreamCount = 10
+from scipy import stats
 
 start_time = time.time()
-malicious_ip = re.compile(r'172.18.0.(\d)*/172.18.0.(\d)*')
 
-def cls():
-    os.system('cls' if os.name=='nt' else 'clear')
-
-
-def print_every(x, stats):
-    if not print_every.counter % x:
+def print_every(rate, scores):
+    if print_every.packets_read % rate == 0:
         current_time = time.time()
-        cls()
-        print('Packets Analysed:  ', print_every.counter)
-        print("Time Elapsed:\t    %.2f seconds" % (current_time - start_time))
-        print("Time per %s:\t    %.2f seconds" % (x, (current_time - print_every.last_time)))
-        print("Packets per second: %s" % (int(x / (current_time - print_every.last_time))))
-        print(stats.sort_values(by=['Score'], ascending=False).head(20))
-        print(stats.loc[stats['Malicious'] == 1])
+        statistics = display_statistics(print_every.packets_read, rate, current_time, print_every.last_print)
 
-        print_every.last_time = current_time
+        print(statistics)
+        print(scores.head(25))
 
-    print_every.counter += 1
-print_every.counter = 0
-print_every.last_time = 0
+        print_every.last_print = current_time
+    print_every.packets_read += 1
+print_every.packets_read = 0
+print_every.last_print = time.time()
 
 
-def capture_live_packets(network_interface):
-    tcp_streams = {}
-    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', ('Periodicity', 'Spread'), ('Periodicity', 'Jitter'), ('Periodicity', 'Skew'), ('Length', 'Spread'), ('Length', 'Jitter'), ('Length', 'Skew'), 'Malicious'])
+def display_statistics(packets_read, rate, time, last_print):
+    os.system('cls' if os.name=='nt' else 'clear')
+    return f'Packets Analysed:   {packets_read}' \
+           f'\nTime Elapsed:       {time - start_time:.2f} seconds' \
+           f'\nPackets per second: {rate / (time - last_print):.0f}'
 
-    capture = pyshark.LiveCapture(interface=network_interface, only_summaries = True)
-    
-    for raw_packet in capture:
-        tcp_packet = filter_tcp_traffic(raw_packet)
 
-        if tcp_packet is not None:
-            tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
-            tcp_streams_statistics = get_tcp_streams_statistics(tcp_packet, tcp_streams, tcp_streams_statistics)
+def store(packet):
+    source = packet['Source']
+    destination = packet['Destination']
+    index = packet['Stream index']
 
-            print_every(10, tcp_streams_statistics)
-    
+    if destination in tcp_streams_cache and source in tcp_streams_cache[destination] :
+        if index not in tcp_streams_cache[destination][source]:
+            tcp_streams_cache[destination][source][index] = [packet['Time'], 0, 0, 0, 0, 0]
 
-def read_capture_file(file_path):
-    tcp_streams = {}
-    tcp_streams_statistics = pandas.DataFrame(columns = ['Stream count', ('Periodicity', 'Spread'), ('Periodicity', 'Jitter'), ('Periodicity', 'Skew'), ('Length', 'Spread'), ('Length', 'Jitter'), ('Length', 'Skew'), 'Malicious', 'Score', 'Score breakdown'])
+        tcp_streams_cache[destination][source][index][1] = packet['Time']
+        tcp_streams_cache[destination][source][index][2] += 1
+        tcp_streams_cache[destination][source][index][3] += packet['Length']
 
-    capture = pyshark.FileCapture(file_path, keep_packets=False, only_summaries=True)
+    # Source and Destination flipped
+    elif source in tcp_streams_cache and destination in tcp_streams_cache[source]:
+        if index not in tcp_streams_cache[source][destination]:
+            tcp_streams_cache[source][destination][index] = [packet['Time'], 0, 0, 0, 0, 0]
 
-    for raw_packet in capture:
-        tcp_packet = filter_tcp_traffic(raw_packet)
+        tcp_streams_cache[source][destination][index][1] = packet['Time']
+        tcp_streams_cache[source][destination][index][4] += 1
+        tcp_streams_cache[source][destination][index][5] += packet['Length']
 
-        if tcp_packet is not None:
-            tcp_streams = group_tcp_streams_by_ip(tcp_packet, tcp_streams)
-            tcp_streams_statistics = get_tcp_streams_statistics(tcp_packet, tcp_streams, tcp_streams_statistics)
+        return destination, source
 
-            print_every(1000, tcp_streams_statistics)
-
-def group_tcp_streams_by_ip(packet, tcp_streams):
-    tcp_stream = pandas.DataFrame([(packet['Stream index'], packet['Time'], packet['Length'], 0)], columns = ['Stream index', 'Time', 'Length', 'Duration'])
-    tcp_stream = tcp_stream.set_index('Stream index')
-
-    ip_pair = packet['IP pair']
-    stream_index = packet['Stream index']
-
-    if ip_pair not in tcp_streams:
-        tcp_streams[ip_pair] = tcp_stream
-
-    elif stream_index not in tcp_streams[ip_pair].index:
-        tcp_streams[ip_pair] = pandas.concat([tcp_streams[ip_pair], tcp_stream])
+    elif destination not in tcp_streams_cache:
+        tcp_streams_cache[destination] = {source: {index: [packet['Time'], 0, 0, 0, 0, 0]}}
 
     else:
-        tcp_streams[ip_pair].at[stream_index, 'Length'] += packet['Length']
-        tcp_streams[ip_pair].at[stream_index, 'Duration'] = packet['Time'] - tcp_streams[ip_pair].at[stream_index, 'Time']
-        pass
-
-    return tcp_streams
-
-def new_calculate_score(periodicity_spread, periodicity_jitter, periodicity_skew, length_spread, length_jitter, length_mode):
-    timeSkewScore   = max(1 - abs(periodicity_skew), 0)
-    timeSpreadScore = max(1 - (periodicity_spread / PeriodicitySpreadThreshold), 0)
-    #timeJitterScore = max(1 - (periodicity_jitter / PeriodicityJitterThreshold), 0)
-    timeJitterScore = 1 - min(floor(periodicity_jitter / PeriodicityJitterThreshold), 1)
+        tcp_streams_cache[destination][source] = {index: [packet['Time'], 0, 0, 0, 0, 0]}
+    
+    return source, destination
 
 
-    lengthSpreadScore = max(1 - (length_spread / LengthSpreadThreshold), 0)
-    #lengthJitterScore = max(1 - (length_jitter / LengthJitterThreshold), 0)
-    lengthJitterScore = 1 - min(floor(length_jitter / LengthJitterThreshold), 1)
-    lengthCharacteristicScore = max(1 - length_mode / LengthCharacteristicThreshold, 0)
+def retrieve_values(tcp_streams):
+    values = { 'Outbound Length': [], 'Inbound Length': [], 'Periodicity': [], 'Duration': 0 }
 
-    score = (timeSkewScore + timeSpreadScore + 2*timeJitterScore + lengthSpreadScore + lengthJitterScore + lengthCharacteristicScore) / 7
+    start_times = []
+    for stream in tcp_streams:
+        start_times.append(tcp_streams[stream][0])
+        values['Outbound Length'].append(tcp_streams[stream][3])
+        values['Inbound Length'].append(tcp_streams[stream][5])
+        #values['Outbound Packets'].append(tcp_streams[stream][2])
+        #values['Inbound Packets'].append(tcp_streams[stream][4])
 
-    return score, f'{timeSkewScore:.2f} + {timeSpreadScore:.2f} + {timeJitterScore:.2f} + {lengthSpreadScore:.2f} + {lengthJitterScore:.2f} + {lengthCharacteristicScore:.2f}'
+    values['Periodicity'] = numpy.diff(start_times)
+    values['Duration'] = start_times[-1] - start_times[0]
 
-
-def get_tcp_streams_statistics(packet, tcp_streams, tcp_streams_statistics):
-    tcp_stream_dataframe = tcp_streams[packet['IP pair']]
-    stream_count = len(tcp_stream_dataframe.index)
-
-    if stream_count > MinStreamCount:
-        time_difference = tcp_stream_dataframe['Time'].diff().iloc[1:] # Removes first row NaN
-
-        periodicity_spread = tcp_stream_dataframe['Time'].diff().mad() #(tcp_stream_dataframe['Time'].sum() / (stream_count * tcp_stream_dataframe['Time'].median())) - 1  # Normalised to the median value (acts as a % of the median as opposed to being massive because of median value)
-        periodicity_jitter = (time_difference.std() / time_difference.mean()) * 100
-        periodicity_skew = tcp_stream_dataframe['Time'].skew()
-
-        #duration_jitter = (tcp_stream_dataframe['Duration'].std() / tcp_stream_dataframe['Duration'].mean()) * 100
-        #duration_skew = tcp_stream_dataframe['Duration'].skew()
-
-        length_spread = tcp_stream_dataframe['Length'].diff().mad() #(tcp_stream_dataframe['Length'].sum() / (stream_count * tcp_stream_dataframe['Length'].median())) - 1
-        length_jitter = (tcp_stream_dataframe['Length'].std() / tcp_stream_dataframe['Length'].mean()) * 100
-        length_skew = tcp_stream_dataframe['Length'].skew()
-        length_mode = tcp_stream_dataframe['Length'].mode()[0]
-
-        malicious = 1 if bool(malicious_ip.search(packet['IP pair'])) else 0
-
-        score, score_breakdown = new_calculate_score(periodicity_spread, periodicity_jitter, periodicity_skew, length_spread, length_jitter, length_mode)
-
-        tcp_streams_statistics.loc[packet['IP pair']] = [stream_count, periodicity_spread, periodicity_jitter, periodicity_skew, length_spread, length_jitter, length_skew, malicious, score, score_breakdown]
-
-    return tcp_streams_statistics
+    return values
 
 
-def filter_tcp_traffic(packet):
-    """
-    This function is designed to parse all the Transmission Control Protocol(TCP) packets
-    :param packet: raw packet
-    :return: specific packet details
-    """
-    if hasattr(packet, 'protocol'):
-       if packet.protocol == 'TCP':
-            results = get_packet_details(packet)
-            return results
+def calculate_score(results, duration):
+    timeSpreadScore = max(1 - (results['PeriodicitySpread'] / 30), 0) # Seconds
+    outLengthSpreadScore = max(1 - (results['OutLengthSpread'] / 32), 0) # Bytes
+    inLengthSpreadScore = max(1 - (results['InLengthSpread'] / 32), 0) # Bytes
 
+    timeCountScore = min(results['Count'] / (duration / 60), 1) # DIVIDE STREAM COUNT BY NUMBER OF IPs How many there were vs how many there should have been given the time (e.g. 5 / (300/60) = 1)
+    outLengthCharacteristicScore = max(1 - results['OutLengthMode'] / 65535, 0) # Bytes
+    inLengthCharacteristicScore = max(1 - results['InLengthMode'] / 65535, 0) # Bytes
+
+    scores = [timeSpreadScore, outLengthSpreadScore, inLengthSpreadScore, timeCountScore, outLengthCharacteristicScore, inLengthCharacteristicScore]
+    score = sum(scores) / len(scores)
+    score_breakdown = " + ".join(map('{:.2f}'.format, scores))
+
+    return score, score_breakdown
+
+
+def analyse(source, destination, tcp_streams):
+    tcp_streams = tcp_streams_cache[destination][source]
+
+    results = {'Source': source, 'Destination': destination, 'Count': len(tcp_streams),
+               'PeriodicitySpread': 0, 'OutLengthSpread': 0, 'InLengthSpread': 0,
+               'PeriodicityJitter': 0, 'OutLengthJitter': 0, 'InLengthJitter': 0,
+                                       'OutLengthMode':   0, 'InLengthMode':   0}
+
+    values = retrieve_values(tcp_streams)    
+
+    results['PeriodicitySpread'] = stats.median_abs_deviation(values['Periodicity'])
+    results['OutLengthSpread']   = stats.median_abs_deviation(values['Outbound Length'])
+    results['InLengthSpread']    = stats.median_abs_deviation(values['Inbound Length'])
+
+    results['PeriodicityJitter'] = numpy.std(values['Periodicity']) / numpy.mean(values['Periodicity'])
+    results['OutLengthJitter']   = numpy.std(values['Outbound Length']) / numpy.mean(values['Outbound Length']) 
+    results['InLengthJitter']    = numpy.std(values['Inbound Length']) / numpy.mean(values['Inbound Length'])
+
+    results['OutLengthMode']   = stats.mode(values['Outbound Length'])[0][0]
+    results['InLengthMode']    = stats.mode(values['Inbound Length'])[0][0]
+
+    score, score_breakdown = calculate_score(results, values['Duration'])
+
+    return [source, destination, len(tcp_streams),
+            results['PeriodicitySpread'], results['PeriodicityJitter'], 
+            results['OutLengthSpread'], results['OutLengthJitter'], 
+            results['InLengthSpread'], results['InLengthJitter'], 
+            score, score_breakdown]
+    
 
 def get_packet_details(packet):
     """
@@ -154,19 +134,32 @@ def get_packet_details(packet):
     stream_index = int(getattr(packet, 'stream index'))
     source_address = packet.source
     destination_address = packet.destination
-    ip_pair = source_address + "/" + destination_address
     packet_time = float(packet.time)
     packet_length = int(packet.length)
     
-
     return {'Stream index': stream_index,
-            'Source address' : source_address,
-            'Destination address' : destination_address,
-            'IP pair': ip_pair,
-            'Time': packet_time,
-            'Length': packet_length}
+            'Source':       source_address,
+            'Destination':  destination_address,
+            'Time':         packet_time,
+            'Length':       packet_length}
 
-#capture_live_packets('\\Device\\NPF_{25D9BFB1-5E09-4CC1-84E6-0CFCF3015D87}')
-#capture_live_packets('\\Device\\NPF_{7409A38B-59FA-4DD0-BFA0-69D15666F1E6}')
 
-read_capture_file('tcpdump/smaller-test.pcap')
+tcp_streams_cache = {}
+scores = pandas.DataFrame(columns = ['Stream count', ('Periodicity', 'Spread'), ('Periodicity', 'Jitter'), ('Outbound Length', 'Spread'), ('Outbound Length', 'Jitter'), ('Inbound Length', 'Spread'), ('Inbound Length', 'Jitter'), 'Score', 'Score breakdown'])
+
+capture = pyshark.FileCapture('tcpdump/smaller-test.pcap', keep_packets=False, only_summaries=True)
+
+results = []
+for packet in capture:
+    if hasattr(packet, 'protocol'):
+        if packet.protocol == 'TCP':
+            tcp_packet = get_packet_details(packet)
+            source, destination = store(tcp_packet)
+
+            if len(tcp_streams_cache[destination][source]) % 10 == 0:
+                results = analyse(source, destination, tcp_streams_cache)
+                scores.loc[str(results[0]) + '/' + str(results[1])] = results[2:]
+                scores.sort_values(by='Score', ascending=False, inplace=True)
+        
+            
+    print_every(10000, scores)
