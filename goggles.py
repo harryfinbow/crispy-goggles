@@ -65,8 +65,10 @@ def store(packet):
 def retrieve_values(tcp_streams):
     values = { 'Outbound Length': [], 'Inbound Length': [], 'Periodicity': [], 'Duration': 0 }
 
+    window = int(0.8 * len(tcp_streams))
+
     start_times = []
-    for stream in tcp_streams:
+    for stream in list(tcp_streams.keys())[-window:]:
         start_times.append(tcp_streams[stream][0])
         values['Outbound Length'].append(tcp_streams[stream][3])
         values['Inbound Length'].append(tcp_streams[stream][5])
@@ -81,8 +83,8 @@ def retrieve_values(tcp_streams):
 
 def calculate_score(results, duration):
     timeSpreadScore = max(1 - (results['PeriodicitySpread'] / 30), 0) # Seconds
-    outLengthSpreadScore = max(1 - (results['OutLengthSpread'] / 32), 0) # Bytes
-    inLengthSpreadScore = max(1 - (results['InLengthSpread'] / 32), 0) # Bytes
+    outLengthSpreadScore = max(1 - (results['OutLengthSpread'] / 64), 0) # Bytes
+    inLengthSpreadScore = max(1 - (results['InLengthSpread'] / 64), 0) # Bytes
 
     timeCountScore = min(results['Count'] / (duration / 60), 1) # DIVIDE STREAM COUNT BY NUMBER OF IPs How many there were vs how many there should have been given the time (e.g. 5 / (300/60) = 1)
     outLengthCharacteristicScore = max(1 - results['OutLengthMode'] / 65535, 0) # Bytes
@@ -145,9 +147,9 @@ def get_packet_details(packet):
 
 
 tcp_streams_cache = {}
-scores = pandas.DataFrame(columns = ['Stream count', ('Periodicity', 'Spread'), ('Periodicity', 'Jitter'), ('Outbound Length', 'Spread'), ('Outbound Length', 'Jitter'), ('Inbound Length', 'Spread'), ('Inbound Length', 'Jitter'), 'Score', 'Score breakdown'])
+scores = pandas.DataFrame(columns = ['Stream count', 'pSpread', 'pJitter',  'oSpread', 'oJitter', 'iSpread', 'iJitter', 'Score', 'Score breakdown'])
 
-capture = pyshark.FileCapture('tcpdump/smaller-test.pcap', keep_packets=False, only_summaries=True)
+capture = pyshark.FileCapture('tcpdump/30-seconds_0.20-jitter/01.pcap', keep_packets=False, only_summaries=True)
 
 results = []
 for packet in capture:
@@ -156,7 +158,7 @@ for packet in capture:
             tcp_packet = get_packet_details(packet)
             source, destination = store(tcp_packet)
 
-            if len(tcp_streams_cache[destination][source]) % 10 == 0:
+            if len(tcp_streams_cache[destination][source]) % 10 == 0 and len(tcp_streams_cache[destination][source]) > 0:
                 results = analyse(source, destination, tcp_streams_cache)
                 scores.loc[str(results[0]) + '/' + str(results[1])] = results[2:]
                 scores.sort_values(by='Score', ascending=False, inplace=True)
