@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
-    image: goggles/server:https
+    image: goggles/server
     ports:
       - "80:80"
       - "443:443"
@@ -16,7 +16,7 @@ services:
       dockerfile: Dockerfile.compromised
     depends_on:
       - server
-    image: goggles/compromised:https
+    image: goggles/compromised
 
   benign:
     build:
