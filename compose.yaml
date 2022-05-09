@@ -1,6 +1,9 @@
 version: "3.9"
 services:
   server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
     image: goggles/server:https
     ports:
       - "80:80"
@@ -8,23 +11,25 @@ services:
       - "8000:8000"
 
   compromised:
+    build:
+      context: .
+      dockerfile: Dockerfile.compromised
     depends_on:
       - server
     image: goggles/compromised:https
 
   benign:
+    build:
+      context: .
+      dockerfile: Dockerfile.benign
     depends_on:
       - server
     image: goggles/benign
 
-  tcpdump:
-     image: kaazing/tcpdump
-     network_mode: "host"
-     volumes:
-       - ./tcpdump:/tcpdump
-
-
   detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.detector
     depends_on:
         - server
     image: goggles/detector
@@ -35,6 +40,11 @@ services:
       - 'NET_RAW'
       - 'NET_ADMIN'
 
+  tcpdump:
+     image: kaazing/tcpdump
+     network_mode: "host"
+     volumes:
+       - ./tcpdump:/tcpdump
 
 networks:
   default:
