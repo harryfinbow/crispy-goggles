@@ -1,0 +1,9 @@
+FROM m0rv4i/poshc2
+
+RUN posh-project -n botnet
+RUN sed -i "s/BindIP: '0.0.0.0'/BindIP: 172.18.0.2"/g /var/poshc2/botnet/config.yml
+RUN sed -i 's/PayloadCommsHost: "https:\/\/127.0.0.1"/PayloadCommsHost: "https:\/\/172.18.0.2"'/g /var/poshc2/botnet/config.yml
+RUN sed -i 's/DefaultSleep: "5s"/DefaultSleep: "60s"'/g /var/poshc2/botnet/config.yml
+RUN sed -i 's/Jitter: 0.20/Jitter: 0.20'/g /var/poshc2/botnet/config.yml
+
+CMD posh-server & sleep 10; cd /var/poshc2/botnet/payloads; python3 -m http.server

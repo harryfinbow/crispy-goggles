@@ -1,0 +1,12 @@
+FROM python:3
+
+# Install prerequisites
+RUN pip install requests
+RUN git clone https://github.com/ReconInfoSec/web-traffic-generator.git
+
+# Configure web-traffic-generator
+RUN mv web-traffic-generator/config.py.template web-traffic-generator/config.py
+RUN sed -i "s/MAX_WAIT = 10/MAX_WAIT = 60"/g web-traffic-generator/config.py
+
+# Run web-traffic-generator on container creation
+CMD python /web-traffic-generator/gen.py

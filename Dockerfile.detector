@@ -1,0 +1,7 @@
+FROM cemt/pyshark
+
+RUN pip install numpy pandas scipy
+
+ADD goggles.py ./goggles.py
+
+CMD sleep 60; python3 -u goggles.py

